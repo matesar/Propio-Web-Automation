@@ -17,13 +17,13 @@ py -m playwright install chromium
 ### Opción Chrome
 
 ```powershell
-"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\chrome-debug-profile"
+Start-Process "C:\Program Files\Google\Chrome\Application\chrome.exe" -ArgumentList '--remote-debugging-port=9222','--user-data-dir=C:\temp\chrome-debug-profile'
 ```
 
 ### Opción Edge
 
 ```powershell
-"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222 --user-data-dir="C:\temp\edge-debug-profile"
+Start-Process "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" -ArgumentList '--remote-debugging-port=9222','--user-data-dir=C:\temp\edge-debug-profile'
 ```
 
 Luego:
@@ -73,3 +73,30 @@ Nuevas hojas de reporting:
 Formato visual:
 - Encabezados en azul oscuro, texto blanco, bordes finos, zebra stripes, filtros y freeze pane.
 - KPIs y gráficos en hojas de resumen (`Daily Summary`, `Monthly Call Summary`, `Weekly Available Summary`).
+
+## Launcher de login (opcional)
+
+Archivos:
+- `launch_and_login.py`
+- `launch_and_login.ps1`
+- `launch_and_login.bat` (wrapper)
+
+### Variables de entorno
+Copiá `.env.example` a `.env` y completá:
+- `PROPIO_EMAIL`
+- `PROPIO_PASSWORD`
+
+### Ejecutar desde PowerShell
+```powershell
+.\launch_and_login.ps1
+```
+
+O wrapper:
+```powershell
+.\launch_and_login.bat
+```
+
+Para lanzar también el monitor al terminar login:
+```powershell
+.\launch_and_login.ps1 -RunMonitor
+```
