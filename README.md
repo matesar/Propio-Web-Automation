@@ -83,8 +83,9 @@ Archivos:
 
 ### Variables de entorno
 Copiá `.env.example` a `.env` y completá:
-- `PROPIO_EMAIL`
-- `PROPIO_PASSWORD`
+- `PROPIO_EMAIL` (obligatoria)
+
+El launcher actual usa login **solo por correo electrónico** (sin campo password).
 
 ### Ejecutar desde PowerShell
 ```powershell

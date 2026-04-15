@@ -225,8 +225,30 @@ def find_target_page(browser: Browser, url_contains: str) -> Page:
 # ---------------------------- Lectura de tabla HTML ---------------------------- #
 
 def wait_table_ready(page: Page, timeout_ms: int = 15_000) -> None:
-    """Espera al menos una fila visible para confirmar que la tabla cargó."""
-    page.wait_for_selector(TABLE_ROW_SELECTOR, timeout=timeout_ms)
+    """
+    Espera que el Call History esté listo incluso si no hay filas.
+    Considera ready cuando existe:
+    - la tabla/contenedor, o
+    - encabezados esperados, o
+    - mensaje 'No Calls Found'
+    """
+    page.wait_for_function(
+        """
+() => {
+  const table = document.querySelector('mat-table.call-list-table');
+  if (table) return true;
+
+  const bodyText = (document.body?.innerText || '').toLowerCase();
+  if (bodyText.includes('no calls found')) return true;
+
+  const hasCustomerHeader = bodyText.includes('customer id');
+  const hasCallDateHeader = bodyText.includes('call date');
+  const hasDurationHeader = bodyText.includes('duration (minutes)');
+  return hasCustomerHeader && hasCallDateHeader && hasDurationHeader;
+}
+""",
+        timeout=timeout_ms,
+    )
 
 
 def safe_text(locator) -> str:
@@ -491,18 +513,55 @@ def configure_workbook_layout(wb) -> None:
         wb.active = wb.sheetnames.index(SUMMARY_SHEET_NAME)
 
 
-def parse_datetime_value(value) -> Optional[datetime]:
-    if isinstance(value, datetime):
-        return value
+def normalize_datetime(value) -> Optional[datetime]:
+    """
+    Normaliza datetimes para uso interno (siempre naive, sin tzinfo).
+
+    Reglas:
+    - None -> None
+    - str parseable -> datetime
+    - datetime aware -> strip tzinfo
+    - datetime naive -> igual
+    - no parseable -> None
+    """
     if value is None:
         return None
-    text = str(value).strip()
-    if not text:
-        return None
-    try:
-        return datetime.fromisoformat(text)
-    except ValueError:
-        return None
+
+    dt: Optional[datetime] = None
+    if isinstance(value, datetime):
+        dt = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    else:
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            dt = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+
+    if dt.tzinfo is not None:
+        return dt.replace(tzinfo=None)
+    return dt
+
+
+def parse_datetime_value(value) -> Optional[datetime]:
+    return normalize_datetime(value)
+
+
+def excel_safe_datetime(dt: Optional[datetime]):
+    """
+    Excel/openpyxl no soporta datetime aware (con tzinfo).
+    Devuelve datetime naive cuando corresponde.
+    """
+    return normalize_datetime(dt)
 
 
 def parse_date_value(value) -> Optional[date]:
@@ -906,6 +965,7 @@ def append_new_records(
     """Agrega registros nuevos al Excel y devuelve nuevo total acumulado."""
     for rec, detected_at in new_records_with_detection:
         detected_at_dt = parse_datetime_value(detected_at)
+        detected_at_excel = excel_safe_datetime(detected_at_dt)
         ws_calls.append(
             [
                 rec.customer_id,
@@ -913,7 +973,7 @@ def append_new_records(
                 rec.call_start,
                 rec.duration_minutes,
                 rec.amount_usd,
-                detected_at_dt if detected_at_dt else detected_at,
+                detected_at_excel if detected_at_excel else detected_at,
                 rec.unique_key,
             ]
         )
@@ -1380,8 +1440,10 @@ def parse_status_payload(payload: Dict) -> Optional[StatusEvent]:
     try:
         interpreter_id = int(payload["interpreterId"])
         status = str(payload["status"]).strip().upper()
-        status_date = datetime.fromisoformat(str(payload["statusDate"]))
+        status_date = normalize_datetime(payload["statusDate"])
     except (ValueError, TypeError):
+        return None
+    if status_date is None:
         return None
     if not status:
         return None
@@ -1448,14 +1510,18 @@ def load_status_duration_keys(ws_status_durations) -> Set[str]:
 
 
 def build_status_duration(prev_event: StatusEvent, new_event: StatusEvent) -> Optional[StatusDuration]:
-    if new_event.status_date < prev_event.status_date:
+    prev_dt = normalize_datetime(prev_event.status_date)
+    new_dt = normalize_datetime(new_event.status_date)
+    if prev_dt is None or new_dt is None:
+        return None
+    if new_dt < prev_dt:
         return None
     return StatusDuration(
         interpreter_id=new_event.interpreter_id,
         from_status=prev_event.status,
         to_status=new_event.status,
-        start_dt=prev_event.status_date,
-        end_dt=new_event.status_date,
+        start_dt=prev_dt,
+        end_dt=new_dt,
     )
 
 
@@ -1491,7 +1557,7 @@ def process_pending_status_events(
             [
                 event.interpreter_id,
                 event.status,
-                event.status_date,
+                excel_safe_datetime(event.status_date),
                 event.unique_key,
             ]
         )
@@ -1506,8 +1572,8 @@ def process_pending_status_events(
                         duration.interpreter_id,
                         duration.from_status,
                         duration.to_status,
-                        duration.start_dt,
-                        duration.end_dt,
+                        excel_safe_datetime(duration.start_dt),
+                        excel_safe_datetime(duration.end_dt),
                         duration.elapsed_seconds,
                         duration.elapsed_minutes,
                         duration.elapsed_mmss,
@@ -1588,6 +1654,9 @@ def monitor_loop(page: Page, excel_path: Path, interval_seconds: int) -> None:
 
     # Sincronización inicial: importar llamadas visibles no presentes en Excel
     visible_records = read_visible_records_with_recovery(page, retries=1)
+    if not visible_records:
+        log_msg = "Call history cargado, sin llamadas todavía"
+        print(f"[INFO] {log_msg}")
     initial_sync_records: List[CallRecord] = [
         rec for rec in visible_records if rec.unique_key not in seen_keys
     ]

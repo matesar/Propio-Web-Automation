@@ -32,12 +32,11 @@ except Exception:
 # ---------------------------------------------------------------------------
 # CONFIGURACIÓN EDITABLE (reemplazá estos valores para tu sitio)
 # ---------------------------------------------------------------------------
-LOGIN_URL = "https://example.com/login"
-POST_LOGIN_URL_CONTAINS = "/call-history"
+LOGIN_URL = "https://interpreters.propio-ls.com/Login?ReturnUrl=%2Fportal"
+POST_LOGIN_URL_CONTAINS = "/portal"
 
-SELECTOR_EMAIL = "input[type='email']"
-SELECTOR_PASSWORD = "input[type='password']"
-SELECTOR_LOGIN_BUTTON = "button[type='submit']"
+SELECTOR_EMAIL = "input[name='username']"
+SELECTOR_LOGIN_BUTTON = "input#wp-submit"
 
 CDP_URL = "http://127.0.0.1:9222"
 CDP_PORT = 9222
@@ -46,6 +45,7 @@ CHROME_CANDIDATES = [
     r"C:\Program Files\Google\Chrome\Application\chrome.exe",
     r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
+AUTO_REDIRECT_TIMEOUT_MS = 8000
 # ---------------------------------------------------------------------------
 
 
@@ -68,6 +68,10 @@ def get_required_env(name: str) -> str:
     if not value:
         raise RuntimeError(f"Falta variable de entorno requerida: {name}")
     return value
+
+
+def get_optional_env(name: str) -> str:
+    return os.getenv(name, "").strip()
 
 
 def cdp_available(cdp_url: str = CDP_URL, timeout_sec: float = 1.5) -> bool:
@@ -143,16 +147,49 @@ def pick_page(browser: Browser) -> Page:
     return ctx.new_page()
 
 
-def do_login(page: Page, email: str, password: str) -> None:
-    log(f"Navegando a login: {LOGIN_URL}")
+def save_login_debug_artifacts(page: Page) -> None:
+    try:
+        page.screenshot(path="login_debug.png", full_page=True)
+        log("Debug screenshot guardada: login_debug.png")
+    except Exception as exc:
+        log(f"No se pudo guardar screenshot de debug: {exc}")
+    try:
+        Path("login_debug.html").write_text(page.content(), encoding="utf-8")
+        log("Debug HTML guardado: login_debug.html")
+    except Exception as exc:
+        log(f"No se pudo guardar HTML de debug: {exc}")
+
+
+def do_login(page: Page, email: str) -> None:
+    log(f"Navegando a login... {LOGIN_URL}")
     page.goto(LOGIN_URL, wait_until="domcontentloaded")
 
+    log("Esperando redirección automática por sesión existente...")
+    try:
+        page.wait_for_url(
+            lambda url: POST_LOGIN_URL_CONTAINS.lower() in url.lower(),
+            timeout=AUTO_REDIRECT_TIMEOUT_MS,
+        )
+        log("Sesión ya iniciada, se omite login")
+        log(f"Portal listo: {page.url}")
+        return
+    except TimeoutError:
+        log("No hubo redirección automática, se procede con login manual")
+
     log("Completando credenciales...")
-    page.wait_for_selector(SELECTOR_EMAIL, timeout=15000)
+    if not email:
+        raise RuntimeError("PROPIO_EMAIL es obligatoria cuando se requiere iniciar sesión.")
+    try:
+        page.wait_for_selector(SELECTOR_EMAIL, timeout=15000)
+    except TimeoutError:
+        save_login_debug_artifacts(page)
+        raise RuntimeError(
+            f"No se encontró el selector de email: {SELECTOR_EMAIL}. "
+            "Se guardaron login_debug.png y login_debug.html"
+        )
     page.fill(SELECTOR_EMAIL, email)
 
-    page.wait_for_selector(SELECTOR_PASSWORD, timeout=15000)
-    page.fill(SELECTOR_PASSWORD, password)
+    log("Login mode: email-only")
 
     log("Enviando login...")
     page.click(SELECTOR_LOGIN_BUTTON)
@@ -167,8 +204,7 @@ def do_login(page: Page, email: str, password: str) -> None:
 
 def main() -> int:
     load_env_file()
-    email = get_required_env("PROPIO_EMAIL")
-    password = get_required_env("PROPIO_PASSWORD")
+    email = get_optional_env("PROPIO_EMAIL")
 
     pw = None
     browser = None
@@ -176,7 +212,7 @@ def main() -> int:
         ensure_cdp_ready()
         pw, browser = connect_cdp()
         page = pick_page(browser)
-        do_login(page, email, password)
+        do_login(page, email)
 
         log("Login completado. Chrome queda abierto y listo para monitor_call_log.py")
         return 0
